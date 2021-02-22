@@ -1,0 +1,8 @@
+{
+    "dscanner.ignoredKeys": [
+        "dscanner.suspicious.unmodified",
+        "dscanner.suspicious.catch_em_all",
+        "dscanner.style.undocumented_declaration",
+        "dscanner.suspicious.length_subtraction"
+    ]
+}

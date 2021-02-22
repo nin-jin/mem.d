@@ -1,0 +1,24 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Build",
+			"type": "dub",
+			"run": false,
+			"compiler": "dmd",
+			"archType": "x86_64",
+			"buildType": "unittest",
+			"configuration": "application",
+			"problemMatcher": [
+				"$dmd"
+			],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"presentation": {
+				"reveal": "silent",
+			},
+		}
+	]
+}
