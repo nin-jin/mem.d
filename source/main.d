@@ -56,38 +56,21 @@ struct Atom(Value)
 {
     // align(1):
 
-    /** Link to slave with index of back link in complement array */
-    private struct LinkToSlave
+    /** Link to current slave with index of next master */
+    private struct Cursor
     {
         Atom* slave;
         size_t index;
-
-        LinkToMaster back() @nogc
-        {
-            return this.slave.masters[this.index];
-        }
-    }
-
-    /** Link to master with index of back link in complement array */
-    private struct LinkToMaster
-    {
-        Atom* master;
-        size_t index;
-
-        LinkToSlave back() @nogc
-        {
-            return this.master.slaves[this.index];
-        }
     }
 
     @disable this(this); // no postblit
     @disable this(ref Atom source); // no copy constructor
 
     /** Stack of current calculated atoms */
-    private static Array!LinkToSlave path;
+    private static Cursor cursor;
 
-    private Array!LinkToMaster masters; // 8 byte
-    private Array!LinkToSlave slaves; // 8 byte
+    private Array!(Atom*) masters; // 8 byte
+    private Atom* slave; // 8 byte
 
     union  // >= 8 byte
     {
@@ -109,9 +92,9 @@ struct Atom(Value)
 
         if (this.ready == Ready.doubt)
         {
-            foreach (link; this.masters)
+            foreach (master; this.masters)
             {
-                link.master.refresh;
+                master.refresh;
                 if (this.ready == Ready.stale)
                 {
                     goto pull;
@@ -126,10 +109,12 @@ struct Atom(Value)
         {
         pull:
 
-            Atom.path.insertBack(LinkToSlave(&this, 0));
+            auto cursor = Atom.cursor;
+            Atom.cursor = Cursor(&this, 0);
             scope (exit)
             {
-                Atom.path.length = Atom.path.length - 1;
+                // @todo RAII
+                Atom.cursor = cursor;
             }
 
             try
@@ -148,35 +133,31 @@ struct Atom(Value)
     /** Tracks this atom as dependency and returns a fresh value or throws an error */
     Value get() @nogc
     {
-        if (!Atom.path.empty)
+        if (Atom.cursor.slave !is null)
         {
-
-            auto top = &Atom.path.back();
 
             scope (exit)
             {
-                top.index++;
+                Atom.cursor.index++;
+            }
+            
+            if(this.slave is null){
+                this.slave = Atom.cursor.slave;
             }
 
-            const msl = this.slaves.length;
-            const sml = top.slave.masters.length;
+            const siblings_lenght = Atom.cursor.slave.masters.length;
 
-            if (sml > top.index)
+            if (siblings_lenght > Atom.cursor.index)
             {
-                auto exists = this.slaves[top.index];
-                if (exists != *top)
+                auto exists = Atom.cursor.slave.masters[Atom.cursor.index];
+                if (exists !is null && exists != &this)
                 {
-                    exists.back.index = msl;
-                    this.slaves ~= exists;
-                    this.slaves[top.index] = LinkToSlave(top.slave, sml);
+                    Atom.cursor.slave.masters ~= exists;
                 }
+                Atom.cursor.slave.masters[Atom.cursor.index] = &this;
+            } else {
+                Atom.cursor.slave.masters ~= &this;
             }
-            else
-            {
-                this.slaves ~= LinkToSlave(top.slave, sml);
-            }
-
-            top.slave.masters ~= LinkToMaster(&this, top.index);
         }
 
         this.refresh();
@@ -203,10 +184,8 @@ struct Atom(Value)
     {
         if ((this.store != Store.value) || (this.value != next))
         {
-            foreach (link; this.slaves)
-            {
-                link.slave.stale;
-            }
+            if (this.slave !is null)
+                this.slave.stale;
         }
         this.value = next;
         this.store = Store.value;
@@ -216,9 +195,9 @@ struct Atom(Value)
     void fail(Throwable next) @nogc
     {
         if ((this.store != Store.error) || (this.error !is next))
-            scope (exit)
-                foreach (link; this.slaves)
-                    link.slave.stale;
+            if (this.slave !is null)
+                scope (exit)
+                    this.slave.stale;
         this.error = next;
         this.store = Store.error;
         this.ready = Ready.fresh;
@@ -231,8 +210,8 @@ struct Atom(Value)
 
         this.ready = Ready.stale;
 
-        foreach (link; this.slaves)
-            link.slave.doubt;
+        if (this.slave !is null)
+            this.slave.doubt;
 
     }
 
@@ -245,8 +224,8 @@ struct Atom(Value)
 
         this.ready = Ready.doubt;
 
-        foreach (link; this.slaves)
-            link.slave.doubt;
+        if (this.slave !is null)
+            this.slave.doubt;
 
     }
 
