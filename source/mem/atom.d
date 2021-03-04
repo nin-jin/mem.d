@@ -23,7 +23,7 @@ struct Atom(Value)
     private Array!(Atom*) masters; // 8 byte
     private Atom* slave; // 8 byte
 
-    union  // >= 8 byte
+    union // >= 8 byte
     {
         Value value;
         Throwable error;
@@ -123,12 +123,6 @@ struct Atom(Value)
         }
 
         assert(0);
-    }
-
-    Value get(Value delegate(Mem mem) @nogc calc) @nogc
-    {
-        this.calc = calc;
-        return this.get;
     }
 
     void put(Value next) @nogc
