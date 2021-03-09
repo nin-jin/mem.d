@@ -23,7 +23,7 @@ struct Atom(Value)
     private Array!(Atom*) masters; // 8 byte
     private Atom* slave; // 8 byte
 
-    union // >= 8 byte
+    union  // >= 8 byte
     {
         Value value;
         Throwable error;
@@ -47,9 +47,7 @@ struct Atom(Value)
             {
                 master.refresh;
                 if (this.ready == Ready.stale)
-                {
                     goto pull;
-                }
             }
 
             this.ready = Ready.fresh;
@@ -63,10 +61,7 @@ struct Atom(Value)
             auto cursor = Atom.cursor;
             Atom.cursor = Cursor(&this, 0);
             scope (exit)
-            {
-                // @todo RAII
                 Atom.cursor = cursor;
-            }
 
             try
             {
@@ -88,13 +83,10 @@ struct Atom(Value)
         {
 
             scope (exit)
-            {
                 Atom.cursor.index++;
-            }
-            
-            if(this.slave is null){
+
+            if (this.slave is null)
                 this.slave = Atom.cursor.slave;
-            }
 
             const siblings_lenght = Atom.cursor.slave.masters.length;
 
@@ -106,7 +98,9 @@ struct Atom(Value)
                     Atom.cursor.slave.masters ~= exists;
                 }
                 Atom.cursor.slave.masters[Atom.cursor.index] = &this;
-            } else {
+            }
+            else
+            {
                 Atom.cursor.slave.masters ~= &this;
             }
         }
@@ -114,13 +108,9 @@ struct Atom(Value)
         this.refresh();
 
         if (this.store == Store.value)
-        {
             return this.value;
-        }
         else
-        {
             throw this.error;
-        }
 
         assert(0);
     }
@@ -128,10 +118,8 @@ struct Atom(Value)
     void put(Value next) @nogc
     {
         if ((this.store != Store.value) || (this.value != next))
-        {
             if (this.slave !is null)
                 this.slave.stale;
-        }
         this.value = next;
         this.store = Store.value;
         this.ready = Ready.fresh;
@@ -141,8 +129,7 @@ struct Atom(Value)
     {
         if ((this.store != Store.error) || (this.error !is next))
             if (this.slave !is null)
-                scope (exit)
-                    this.slave.stale;
+                this.slave.stale;
         this.error = next;
         this.store = Store.error;
         this.ready = Ready.fresh;
