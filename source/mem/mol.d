@@ -14,8 +14,7 @@ auto mol(alias Obj)()
         res ~= ("Atom!(" ~ Val!member ~ ") " ~ member ~ "_atom;\n");
         
         res ~= ("auto " ~ member ~ "() @nogc {\n");
-        res ~= ("   this." ~ member ~ "_atom.calc = &this." ~ member ~ ";\n");
-        res ~= ("   return this." ~ member ~ "_atom.get();\n");
+        res ~= ("   return this." ~ member ~ "_atom.get(&this." ~ member ~ ");\n");
         res ~= ("}\n");
         
         res ~= (

@@ -1,27 +1,31 @@
 module mem.atom;
 
-import std.container.array, std.variant, std.bitmanip, mem.ready, mem.store, mem.mem;
+import std.container.array, std.variant, std.bitmanip, mem.mem;
 
 /** Reactive primitive that calculates, cache and revalidate result. */
 struct Atom(Value)
 {
     // align(1):
 
-    /** Link to current slave with index of next master */
-    private struct Cursor
+    /** Link to peer with index of back link in complement array */
+    private struct Link
     {
-        Atom* slave;
+        Atom* atom;
         size_t index;
+
+        Link back() @nogc
+        {
+            return this.atom.peers[this.index];
+        }
     }
 
     @disable this(this); // no postblit
     @disable this(ref Atom source); // no copy constructor
 
-    /** Stack of current calculated atoms */
-    private static Cursor cursor;
+    /** Current calculating atoms */
+    private static Link current;
 
-    private Array!(Atom*) masters; // 8 byte
-    private Atom* slave; // 8 byte
+    private Array!Link peers; // 8 byte
 
     union  // >= 8 byte
     {
@@ -29,43 +33,74 @@ struct Atom(Value)
         Throwable error;
     }
 
-    Value delegate(Mem mem) @nogc calc; // 16 byte
-
-    Ready ready; // 1 byte
-    Store store; // 1 byte
-    // mixin(bitfields!(Ready, "ready", 2, Store, "store", 1, uint, "", 5,)); // 1 byte
+    mixin(bitfields!(bool, "fresh", 1, bool, "done", 1, uint, "slaves_from", 30)); // 4 bytes
 
     pragma(msg, Atom.stringof ~ ": " ~ Atom.sizeof.stringof);
 
-    /** Recalculate atom and store result */
-    private void refresh() @nogc
+    /** Moves peer from one position to another. Doesn't clear data at old position! */
+    private void move_link(size_t from_pos, size_t to_pos) @nogc
     {
-
-        if (this.ready == Ready.doubt)
-        {
-            foreach (master; this.masters)
-            {
-                master.refresh;
-                if (this.ready == Ready.stale)
-                    goto pull;
-            }
-
-            this.ready = Ready.fresh;
+        if (from_pos == to_pos)
             return;
-        }
 
-        if (this.ready == Ready.stale)
+        auto link = this.peers[from_pos];
+
+        if (to_pos == this.peers.length)
+            this.peers ~= link;
+        else
+            this.peers[to_pos] = link;
+
+        link.back.index = to_pos;
+    }
+
+    private void escape_slave(size_t pos) @nogc
+    {
+        if (pos >= this.peers.length)
+            return;
+
+        this.move_link(pos, this.peers.length);
+    }
+
+    private void escape_master(size_t pos) @nogc
+    {
+        if (pos >= this.peers.length)
+            return;
+
+        this.escape_slave(this.slaves_from);
+        this.move_link(pos, this.slaves_from);
+        this.slaves_from = this.slaves_from + 1;
+    }
+
+    private void fill_slave(size_t pos) @nogc
+    {
+        if (pos == this.peers.length)
+            return;
+        this.move_link(this.peers.length - 1, pos);
+        this.peers.length = this.peers.length - 1;
+    }
+
+    private void fill_master(size_t pos) @nogc
+    {
+        this.slaves_from = this.slaves_from - 1;
+        this.move_link(this.slaves_from, pos);
+        this.fill_slave(this.slaves_from);
+    }
+
+    /** Tracks this atom as dependency and returns a fresh value or throws an error */
+    Value get(Value delegate(Mem) @nogc task) @nogc
+    {
+        // Recalculate when required
+        if (!this.fresh)
         {
-        pull:
 
-            auto cursor = Atom.cursor;
-            Atom.cursor = Cursor(&this, 0);
+            auto current = Atom.current;
+            Atom.current = Link(&this, 0);
             scope (exit)
-                Atom.cursor = cursor;
+                Atom.current = current;
 
             try
             {
-                this.put(this.calc(Mem()));
+                this.put(task(Mem()));
             }
             catch (Throwable err)
             {
@@ -74,40 +109,40 @@ struct Atom(Value)
 
         }
 
-    }
-
-    /** Tracks this atom as dependency and returns a fresh value or throws an error */
-    Value get() @nogc
-    {
-        if (Atom.cursor.slave !is null)
+        // Link with currently calculated atom
+        if (Atom.current.atom !is null)
         {
 
             scope (exit)
-                Atom.cursor.index++;
+                Atom.current.index++;
 
-            if (this.slave is null)
-                this.slave = Atom.cursor.slave;
-
-            const siblings_lenght = Atom.cursor.slave.masters.length;
-
-            if (siblings_lenght > Atom.cursor.index)
+            if (Atom.current.index < Atom.current.atom.slaves_from)
             {
-                auto exists = Atom.cursor.slave.masters[Atom.cursor.index];
-                if (exists !is null && exists != &this)
+                if (Atom.current.back.atom != &this)
                 {
-                    Atom.cursor.slave.masters ~= exists;
+                    Atom.current.atom.escape_master(Atom.current.index);
+                    Atom.current.atom.peers[Atom.current.index] = Link(&this, this.peers.length);
+                    this.peers ~= Atom.current;
                 }
-                Atom.cursor.slave.masters[Atom.cursor.index] = &this;
             }
             else
             {
-                Atom.cursor.slave.masters ~= &this;
+                if (Atom.current.atom.peers.length != Atom.current.atom.slaves_from)
+                    Atom.current.atom.escape_slave(Atom.current.index);
+
+                if (Atom.current.index == Atom.current.atom.peers.length)
+                    Atom.current.atom.peers ~= Link(&this, this.peers.length);
+                else
+                    Atom.current.atom.peers[Atom.current.index] = Link(&this, this.peers.length);
+
+                this.peers ~= Atom.current;
+
             }
+
         }
 
-        this.refresh();
-
-        if (this.store == Store.value)
+        // Return actual cached value
+        if (this.done)
             return this.value;
         else
             throw this.error;
@@ -117,47 +152,33 @@ struct Atom(Value)
 
     void put(Value next) @nogc
     {
-        if ((this.store != Store.value) || (this.value != next))
-            if (this.slave !is null)
-                this.slave.stale;
+        this.stale();
         this.value = next;
-        this.store = Store.value;
-        this.ready = Ready.fresh;
+        this.done = true;
+        this.fresh = true;
     }
 
     void fail(Throwable next) @nogc
     {
-        if ((this.store != Store.error) || (this.error !is next))
-            if (this.slave !is null)
-                this.slave.stale;
+        this.stale();
         this.error = next;
-        this.store = Store.error;
-        this.ready = Ready.fresh;
+        this.done = false;
+        this.fresh = true;
+    }
+
+    void stale_slaves() @nogc
+    {
     }
 
     void stale() @nogc
     {
-        if (this.ready == Ready.stale)
+        if (!this.fresh)
             return;
 
-        this.ready = Ready.stale;
+        this.fresh = false;
 
-        if (this.slave !is null)
-            this.slave.doubt;
-
-    }
-
-    void doubt() @nogc
-    {
-        if (this.ready == Ready.stale)
-            return;
-        if (this.ready == Ready.doubt)
-            return;
-
-        this.ready = Ready.doubt;
-
-        if (this.slave !is null)
-            this.slave.doubt;
+        foreach (slave; this.peers[this.slaves_from .. $])
+            slave.atom.stale();
 
     }
 
