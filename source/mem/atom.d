@@ -12,7 +12,7 @@ struct Atom(Value)
     {
         Atom* atom;
         size_t index;
-
+        
         Link back() @nogc
         {
             return this.atom.peers[this.index];
@@ -33,9 +33,10 @@ struct Atom(Value)
         Throwable error;
     }
 
-    mixin(bitfields!(bool, "fresh", 1, bool, "done", 1, uint, "slaves_from", 30)); // 4 bytes
+    mixin(bitfields!(bool, "fresh", 1, bool, "done", 1, size_t, "slaves_from", 62)); // 4 bytes
 
     pragma(msg, Atom.stringof ~ ": " ~ Atom.sizeof.stringof);
+    pragma(msg, Link.stringof ~ ": " ~ Link.sizeof.stringof);
 
     /** Moves peer from one position to another. Doesn't clear data at old position! */
     private void move_link(size_t from_pos, size_t to_pos) @nogc
